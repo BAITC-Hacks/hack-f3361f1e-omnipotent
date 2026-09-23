@@ -8,6 +8,7 @@ import { evaluateTask } from './evaluation.js';
 import { analyzeTask } from './analysis.js';
 import { localAssessment, assessmentKey } from '../shared/scoring.js';
 import { seedState } from './seed.js';
+import { withSeedAssessment } from './seed-assessments.js';
 
 type Store = AppState & { schemaVersion: number; sessions: Record<string, Identity>; favorites: Record<string,string[]> };
 const COOKIE = 'sana_session';
@@ -20,7 +21,7 @@ export function createApp({dataFile=resolve('data/store.json'),aiOptions={}}:{da
  if(existsSync(dataFile)&&original.schemaVersion!==3) copyFileSync(dataFile,`${dataFile}.before-accounts-${Date.now()}.bak`);
  const businesses=original.businesses?.length?original.businesses:seedState().businesses;
  if(original.tasks.some((task:Task)=>!task.businessId&&!/^task-[1-5]$/.test(task.id))) businesses.push({id:'business-legacy',name:'Мой бизнес'});
- let state:Store={...original,businesses,schemaVersion:3,sessions:original.sessions??{},favorites:original.favorites??{},tasks:original.tasks.map((task:Task)=>({...task,resolution:task.resolution??'open',businessId:task.businessId??(/^task-[1-5]$/.test(task.id)?`business-${task.id.split('-')[1]}`:'business-legacy')}))};
+ let state:Store={...original,businesses,schemaVersion:3,sessions:original.sessions??{},favorites:original.favorites??{},tasks:original.tasks.map((task:Task)=>({...task,resolution:task.resolution??'open',businessId:task.businessId??(/^task-[1-5]$/.test(task.id)?`business-${task.id.split('-')[1]}`:'business-legacy')})).map(withSeedAssessment)};
  function persist(next:Store) {
   mkdirSync(dirname(dataFile),{recursive:true});
   const temporary=`${dataFile}.${process.pid}.tmp`;
