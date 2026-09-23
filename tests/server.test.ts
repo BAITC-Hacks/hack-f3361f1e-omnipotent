@@ -177,7 +177,7 @@ test('analysis assessment is reused during save and solved tasks reject new subm
  const dir=mkdtempSync(join(tmpdir(),'sana-analysis-cache-'));let calls=0;
  try{
   const supplied={...emptyFields(),title:'Учёт продаж',context:'Магазин учитывает продажи в тетради.'};
-  const mockFetch:typeof fetch=async()=>{calls++;return new Response(JSON.stringify({status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({fields:Object.entries(supplied).map(([field,value])=>({field,value,quality:value?0.5:0,reason:'Частичная информация',improvement:'Уточните сведения',question:'Что нужно уточнить?'}))})}]}]}),{status:200});};
+  const mockFetch:typeof fetch=async()=>{calls++;return new Response(JSON.stringify({status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({fields:Object.entries(supplied).map(([field,value])=>({field,value,evidence:[],quality:value?0.5:0,reason:'Частичная информация',improvement:'Уточните сведения',question:'Что нужно уточнить?'}))})}]}]}),{status:200});};
   const app=createApp({dataFile:join(dir,'store.json'),aiOptions:{apiKey:'test-key',fetchImpl:mockFetch}});const owner=request.agent(app),team=request.agent(app);
   await owner.post('/api/session').send({role:'business',name:'Бизнес'}).expect(200);
   await team.post('/api/session').send({role:'team',name:'Команда'}).expect(200);

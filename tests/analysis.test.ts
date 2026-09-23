@@ -5,11 +5,12 @@ import { FIELD_MAX, assessmentKey, calculateScore, localAssessment } from '../sh
 import { emptyFields, type Field, type TaskFields } from '../shared/types.js';
 const keys=Object.keys(FIELD_MAX) as Field[];
 const facts:TaskFields={...emptyFields(),title:'Прогноз остатков',context:'Популярные товары заканчиваются в магазине.',need:'Планировать заказы для магазина.',users:'Менеджеры закупок',data:'CSV продаж за полгода',outcome:'Прототип прогноза спроса'};
-function payload(fields:TaskFields=facts){return {fields:keys.map(field=>({field,value:fields[field],quality:fields[field]?0.8:0,reason:fields[field]?`Указано: ${fields[field]}`:'Сведения отсутствуют.',improvement:fields[field]?'Уточните детали ответа.':`Укажите ${field}.`,question:`Что ещё известно про ${field}?`}))};}
+function payload(fields:TaskFields=facts){return {fields:keys.map(field=>({field,value:fields[field],evidence:fields[field]?[fields[field]]:[],quality:fields[field]?0.8:0,reason:fields[field]?`Указано: ${fields[field]}`:'Сведения отсутствуют.',improvement:fields[field]?'Уточните детали ответа.':`Укажите ${field}.`,question:`Что ещё известно про ${field}?`}))};}
+const description=Object.values(facts).filter(Boolean).join(' ');
 const response=(value:unknown)=>new Response(JSON.stringify({status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify(value)}]}]}),{status:200});
 test('one call extracts explicit rich-description facts, scores fields and prioritizes gaps',async()=>{
  let calls=0;let sent:Record<string,unknown>={};
- const result=await analyzeTask('В магазине популярные товары заканчиваются. Менеджерам нужен прототип прогноза спроса. Есть CSV продаж за полгода.','Ритейл',{}, {apiKey:'test',fetchImpl:(async(_url,init)=>{calls++;sent=JSON.parse(String(init?.body));return response(payload());}) as typeof fetch});
+ const result=await analyzeTask(description,'Ритейл',{}, {apiKey:'test',fetchImpl:(async(_url,init)=>{calls++;sent=JSON.parse(String(init?.body));return response(payload());}) as typeof fetch});
  assert.equal(calls,1);assert.equal(result.mode,'openai');assert.equal(result.fields.data,'CSV продаж за полгода');assert.equal(result.fields.contact,'');
  assert.equal(result.assessment.inputKey,assessmentKey(result.fields));assert.equal(calculateScore(result.fields,true,result.assessment).total,52);
  assert.equal(result.questions.length,6);assert.equal(result.questions[0].field,'success');assert.equal(sent.store,false);
@@ -17,9 +18,9 @@ test('one call extracts explicit rich-description facts, scores fields and prior
 });
 test('manual nonempty edits survive provider rewrites without losing other fields',async()=>{
  const fields={...facts,data:'CSV выгрузка за два года'};
- const ok=await analyzeTask('Описание магазина','Ритейл',{data:fields.data},{apiKey:'test',fetchImpl:(async()=>response(payload(fields))) as typeof fetch});
+ const ok=await analyzeTask(description,'Ритейл',{data:fields.data},{apiKey:'test',fetchImpl:(async()=>response(payload(fields))) as typeof fetch});
  assert.equal(ok.mode,'openai');assert.equal(ok.fields.data,fields.data);
- const broken=await analyzeTask('Описание магазина','Ритейл',{data:fields.data},{apiKey:'test',fetchImpl:(async()=>response(payload())) as typeof fetch});
+ const broken=await analyzeTask(description,'Ритейл',{data:fields.data},{apiKey:'test',fetchImpl:(async()=>response(payload())) as typeof fetch});
  assert.equal(broken.mode,'openai');assert.equal(broken.fields.data,fields.data);assert.equal(broken.assessment.fields.find(r=>r.field==='data')!.points,0);assert.equal(broken.fields.users,facts.users);assert.ok(broken.assessment.fields.find(r=>r.field==='users')!.points>0);assert.ok(broken.questions.some(q=>q.field==='data'));
 });
 test('semantic zero for irrelevant text and deterministic zero for junk or empty fields',async()=>{
@@ -27,13 +28,13 @@ test('semantic zero for irrelevant text and deterministic zero for junk or empty
  rows.fields.find(r=>r.field==='users')!.quality=0;
  rows.fields.find(r=>r.field==='users')!.reason='Ответ не относится к пользователям этой задачи.';
  rows.fields.find(r=>r.field==='data')!.quality=1;
- const result=await analyzeTask('Магазину нужен прогноз','Ритейл',{}, {apiKey:'test',fetchImpl:(async()=>response(rows)) as typeof fetch});
+ const result=await analyzeTask(rows.fields.map(r=>r.value).join(' '),'Ритейл',{}, {apiKey:'test',fetchImpl:(async()=>response(rows)) as typeof fetch});
  for(const field of ['users','data','contact'])assert.equal(result.assessment.fields.find(r=>r.field===field)!.points,0);
  assert.match(result.assessment.fields.find(r=>r.field==='users')!.reason,/не относится/);
 });
 test('complete answers produce no arbitrary minimum questions',async()=>{
- const rows=payload();for(const row of rows.fields){row.value=`Конкретные сведения для ${row.field}`;row.quality=1;row.question='';row.improvement='';}
- const result=await analyzeTask('Полное описание','Услуги',{}, {apiKey:'test',fetchImpl:(async()=>response(rows)) as typeof fetch});
+ const rows=payload();for(const row of rows.fields){row.value=`Конкретные сведения для ${row.field}`;row.evidence=[row.value];row.quality=1;row.question='';row.improvement='';}
+ const result=await analyzeTask(rows.fields.map(r=>r.value).join(' '),'Услуги',{}, {apiKey:'test',fetchImpl:(async()=>response(rows)) as typeof fetch});
  assert.equal(result.mode,'openai');assert.deepEqual(result.questions,[]);assert.equal(calculateScore(result.fields,true,result.assessment).total,100);
 });
 test('invalid structure, duplicate or unknown fields, bounds and malformed JSON fail honestly',async()=>{
@@ -60,7 +61,7 @@ test('fallback hints are field-specific and duplicate category reasons appear on
 });
 test('sanitized irrelevant manual answers preserve text and zero only affected fields',async()=>{
  const manual={need:'Синие слоны играют в шахматы на Луне.',success:'аю'};
- const result=await analyzeTask('В магазине нужен прогноз спроса','Ритейл',manual,{apiKey:'test',fetchImpl:(async()=>response(payload())) as typeof fetch});
+ const result=await analyzeTask(description,'Ритейл',manual,{apiKey:'test',fetchImpl:(async()=>response(payload())) as typeof fetch});
  assert.equal(result.mode,'openai');assert.equal(result.fields.need,manual.need);assert.equal(result.fields.success,manual.success);
  for(const field of ['need','success'])assert.equal(result.assessment.fields.find(r=>r.field===field)!.points,0);
  assert.equal(result.fields.data,facts.data);assert.ok(result.assessment.fields.find(r=>r.field==='data')!.points>0);
@@ -78,7 +79,7 @@ test('zero-information explanation retains field-specific model reasons',async()
 });
 test('explicit blank manual field stays cleared while omitted fields can be extracted',async()=>{
  let input:{lockedFields:Field[];provided:TaskFields}|undefined;
- const result=await analyzeTask('Есть CSV продаж за полгода. Менеджерам нужен прогноз.','Ритейл',{data:''},{apiKey:'test',fetchImpl:(async(_url,init)=>{input=JSON.parse(JSON.parse(String(init?.body)).input);return response(payload());}) as typeof fetch});
+ const result=await analyzeTask(description,'Ритейл',{data:''},{apiKey:'test',fetchImpl:(async(_url,init)=>{input=JSON.parse(JSON.parse(String(init?.body)).input);return response(payload());}) as typeof fetch});
  assert.equal(result.mode,'openai');assert.equal(result.fields.data,'');assert.equal(result.assessment.fields.find(r=>r.field==='data')!.points,0);
  assert.equal(result.fields.users,facts.users);assert.ok(result.assessment.fields.find(r=>r.field==='users')!.points>0);
  assert.deepEqual(input!.lockedFields,['data']);assert.equal(input!.provided.data,'');
@@ -86,6 +87,27 @@ test('explicit blank manual field stays cleared while omitted fields can be extr
 
 test('a partial assessment still prompts clarification when model omits the question',async()=>{
  const output=payload();for(const row of output.fields)row.question='';
- const result=await analyzeTask('Магазину нужен прогноз','Торговля',{}, {apiKey:'test',fetchImpl:(async()=>response(output)) as typeof fetch});
+ const result=await analyzeTask(description,'Торговля',{}, {apiKey:'test',fetchImpl:(async()=>response(output)) as typeof fetch});
  assert.ok(result.questions.length>0);assert.ok(result.questions.some(q=>q.field==='success'));
+});
+test('invented contacts and numbers are removed without discarding grounded fields',async()=>{
+ const rows=payload();const contact=rows.fields.find(r=>r.field==='contact')!;contact.value='invented@example.com';contact.evidence=[contact.value];contact.quality=1;
+ const data=rows.fields.find(r=>r.field==='data')!;data.value='CSV продаж за 12 месяцев';data.evidence=[facts.data];data.quality=1;
+ const result=await analyzeTask(description,'Ритейл',{}, {apiKey:'test',fetchImpl:(async()=>response(rows)) as typeof fetch});
+ assert.equal(result.mode,'openai');assert.equal(result.fields.contact,'');assert.equal(result.fields.data,'');
+ for(const field of ['contact','data'])assert.equal(result.assessment.fields.find(r=>r.field===field)!.points,0);
+ assert.equal(result.fields.users,facts.users);assert.ok(result.assessment.fields.find(r=>r.field==='users')!.points>0);
+ assert.match(result.assessment.fields.find(r=>r.field==='contact')!.reason,/цитаты/);
+});
+test('multiple exact evidence segments can form one field with no invented joining text',async()=>{
+ const rows=payload();const data=rows.fields.find(r=>r.field==='data')!;
+ data.evidence=['CSV продаж за полгода','Передадим после согласования'];data.value=data.evidence.join('\n');
+ const result=await analyzeTask(`${description}. Передадим после согласования.`,'Ритейл',{}, {apiKey:'test',fetchImpl:(async()=>response(rows)) as typeof fetch});
+ assert.equal(result.fields.data,data.value);assert.ok(result.assessment.fields.find(r=>r.field==='data')!.points>0);
+});
+test('manual text needs no description evidence but extracted title must also be sourced',async()=>{
+ const rows=payload();const data=rows.fields.find(r=>r.field==='data')!;data.value='Ручная актуальная выгрузка';data.evidence=[];
+ const title=rows.fields.find(r=>r.field==='title')!;title.value='Инновационная система для 100 магазинов';title.evidence=[title.value];
+ const result=await analyzeTask(description,'Ритейл',{data:data.value}, {apiKey:'test',fetchImpl:(async()=>response(rows)) as typeof fetch});
+ assert.equal(result.fields.data,data.value);assert.ok(result.assessment.fields.find(r=>r.field==='data')!.points>0);assert.equal(result.fields.title,'');
 });

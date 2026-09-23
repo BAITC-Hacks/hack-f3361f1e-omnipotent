@@ -8,7 +8,7 @@ import { createApp } from '../server/app';
 import { FIELD_MAX } from '../shared/scoring';
 import { emptyFields, type Field, type TaskFields } from '../shared/types';
 
-test('automatic analysis, history, favorites, public solutions, status and owned deletion',{timeout:30000},async()=>{
+test('manual and explicit AI entry, recommendations, ranking, history and owned workflows',{timeout:30000},async()=>{
  const dom=new JSDOM('<!doctype html><html><body></body></html>',{url:'http://localhost/#/catalog'});
  Object.assign(globalThis,{window:dom.window,document:dom.window.document,localStorage:dom.window.localStorage,HTMLElement:dom.window.HTMLElement,Node:dom.window.Node,MutationObserver:dom.window.MutationObserver,IS_REACT_ACT_ENVIRONMENT:true});
  Object.defineProperty(globalThis,'navigator',{value:dom.window.navigator,configurable:true});
@@ -21,9 +21,9 @@ test('automatic analysis, history, favorites, public solutions, status and owned
  let analysisCalls=0;let holdAnalysis=false;let releaseAnalysis:(()=>void)|undefined;
  const provider=(async(_url,init)=>{
   const body=JSON.parse(String(init?.body)),input=JSON.parse(body.input);
-  if(body.text.format.name==='business_task_analysis'){analysisCalls++;if(holdAnalysis){holdAnalysis=false;await new Promise<void>(resolve=>{releaseAnalysis=resolve;});}}
+  if(body.text.format.name==='business_task_analysis')analysisCalls++;if(holdAnalysis){holdAnalysis=false;await new Promise<void>(resolve=>{releaseAnalysis=resolve;});}
   const merged={...extracted,...Object.fromEntries(Object.entries(input.provided??input.fields??{}).filter(([,v])=>v))} as TaskFields;
-  const rows=(Object.keys(FIELD_MAX) as Field[]).map(field=>({field,value:merged[field],quality:merged[field]==='аю'?0:FIELD_MAX[field]?points[field]/FIELD_MAX[field]:1,reason:`Обоснование: ${field}`,improvement:field==='data'?'Уточните состав таблицы.':'',question:field==='data'?'Какие столбцы есть в вашей таблице продаж?':''}));
+  const rows=(Object.keys(FIELD_MAX) as Field[]).map(field=>({field,value:merged[field],evidence:merged[field]&&input.description.includes(merged[field])?[merged[field]]:[],quality:merged[field]==='аю'?0:FIELD_MAX[field]?points[field]/FIELD_MAX[field]:1,reason:`Обоснование: ${field}`,improvement:field==='data'?'Уточните состав таблицы.':'',question:field==='data'?'Какие столбцы есть в вашей таблице продаж?':''}));
   const responseRows=body.text.format.name==='business_task_analysis'?rows:rows.map(({field,quality,reason,improvement})=>({field,quality,reason,improvement}));
   return new Response(JSON.stringify({status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({fields:responseRows})}]}]}),{status:200});
  }) as typeof fetch;
@@ -65,12 +65,14 @@ test('automatic analysis, history, favorites, public solutions, status and owned
   fireEvent.change(screen.getByLabelText('Название задачи'),{target:{value:''}});
   await click(/Опубликовать задачу/);assert.ok(screen.getAllByRole('alert').some(el=>el.textContent?.includes('название')));
   fireEvent.change(screen.getByLabelText('Название задачи'),{target:{value:'Прогноз для магазина'}});
-  fireEvent.change(screen.getByLabelText('Описание ситуации'),{target:{value:'В магазине закупки планируются вручную. Есть CSV продаж за 6 месяцев. Нужен прогноз для менеджеров.'}});
+  fireEvent.change(screen.getByLabelText('Описание ситуации'),{target:{value:Object.values(extracted).filter(Boolean).join('\n')}});
+  await act(async()=>{await new Promise(r=>setTimeout(r,1600));});assert.equal(analysisCalls,0);assert.equal((screen.getByLabelText('Данные и материалы') as HTMLTextAreaElement).value,'');
+  await click('Распределить описание с AI');
   await waitFor(()=>assert.equal((screen.getByLabelText('Данные и материалы') as HTMLTextAreaElement).value,extracted.data),{timeout:5000});
   assert.ok(screen.getByLabelText('56 из 100 баллов'));
   assert.ok(screen.getByText('Какие столбцы есть в вашей таблице продаж?',{exact:false}));
   assert.ok(!screen.queryByRole('button',{name:/Получить вопросы|Оценить качество/}));
-  const n=analysisCalls;await new Promise(r=>setTimeout(r,1600));assert.equal(analysisCalls,n,'AI field application must not cause an analysis loop');
+  const n=analysisCalls;await act(async()=>{await new Promise(r=>setTimeout(r,1600));});assert.equal(analysisCalls,n,'AI field application must not cause an analysis loop');
   holdAnalysis=true;
   fireEvent.change(screen.getByLabelText('Данные и материалы'),{target:{value:'CSV с уточнёнными столбцами товаров'}});
   await waitFor(()=>assert.ok(releaseAnalysis),{timeout:5000});
@@ -83,6 +85,9 @@ test('automatic analysis, history, favorites, public solutions, status and owned
   await screen.findByText(/сохранена и опубликована/);
   await go(`/tasks/${saved.id}`);
   await screen.findByRole('heading',{name:'Прогноз для магазина'});
+  assert.ok(screen.getByText('#3 из 6 в каталоге'));assert.ok(screen.getByRole('heading',{name:'Как улучшить задачу'}));
+  await go('/cabinet');assert.ok(screen.getByText('Улучшить задачу →'));
+  await go(`/tasks/${saved.id}`);
   await click('☆ В избранное');await click('Отметить как решённую');
   await screen.findByRole('button',{name:'Вернуть в открытые'});
   await go('/favorites');await screen.findByRole('heading',{name:'Прогноз для магазина'});

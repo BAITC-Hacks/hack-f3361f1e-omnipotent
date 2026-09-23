@@ -61,6 +61,8 @@ export function createApp({dataFile=resolve('data/store.json'),aiOptions={}}:{da
  async function assess(owner:string,f:TaskFields,description:string,industry:string) {
   const key=cacheKey(owner,f,description,industry);
   const cached=evaluations.get(key);if(cached)return cached;
+  const saved=state.tasks.find(task=>task.businessId===owner&&task.description===description&&task.industry===industry&&task.assessment?.mode==='openai'&&task.assessment.inputKey===assessmentKey(f))?.assessment;
+  if(saved)return saved;
   const result=await evaluateTask(f,description,industry,aiOptions);
   // A transient provider outage must not permanently prevent retrying the same text.
   if(result.mode==='openai') {if(evaluations.size>=200)evaluations.delete(evaluations.keys().next().value!);evaluations.set(key,result);}
@@ -134,7 +136,7 @@ export function createApp({dataFile=resolve('data/store.json'),aiOptions={}}:{da
   const description=text(input.description??'','Описание');const industry=text(input.industry??'Другое','Сфера',0,120)||'Другое';
   const cached=evaluations.get(cacheKey(who.profileId,f,description,industry));
   const retained=existing?.assessment?.mode==='openai'&&existing.assessment.inputKey===assessmentKey(f)&&existing.description===description&&existing.industry===industry?existing.assessment:undefined;
-  const assessment=confirmed?await assess(who.profileId,f,description,industry):cached??retained??localAssessment(f,description,industry);
+  const assessment=cached??retained??(confirmed?await assess(who.profileId,f,description,industry):localAssessment(f,description,industry));
   requireRole(req,'business'); // Re-check authorization after awaiting the provider.
   if(existing&&state.tasks.find(t=>t.id===existing.id)!==existing)fail('Задача уже изменена. Откройте последнюю версию и повторите сохранение.',409);
   const now=new Date().toISOString();const task:Task={...f,id:existing?.id??randomUUID(),businessId:who.profileId,resolution:existing?.resolution??'open',description,industry,confirmed,published,assessment,createdAt:existing?.createdAt??now,updatedAt:now};
