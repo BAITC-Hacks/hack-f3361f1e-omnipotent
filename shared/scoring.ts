@@ -27,23 +27,29 @@ export function isMeaningless(value:string,field:Field):boolean {
  if(/^для сферы\s.*:\s*(?:какие?|какую|как|кто|что|по каким|с кем)\s/u.test(text)&&text.endsWith('?'))return true;
  return false;
 }
-function fallbackFraction(value:string,field:Field):number {
- if(field==='contact')return /[^\s@]+@[^\s@]+\.[^\s@]+|\+?\d[\d ()-]{7,}|@[a-z\d_]{4,}|(?:https?:\/\/)?t\.me\/[a-z\d_]+/iu.test(value)?0.5:0;
- const words=value.match(/[\p{L}\d]+/gu)??[];
- return words.length>=3?0.5:0.25;
-}
+export const FIELD_HINTS: Record<Field,string> = {
+ title:'Коротко назовите задачу: действие и предмет работы.',
+ context:'Опишите текущий процесс и возникающую в нём проблему.',
+ need:'Уточните, что бизнес хочет изменить и зачем это нужно.',
+ users:'Назовите людей, которые будут пользоваться результатом.',
+ data:'Укажите доступные материалы, их формат и способ передачи команде.',
+ constraints:'Уточните срок, ресурсы и технические ограничения.',
+ outcome:'Перечислите, что команда должна передать в конце работы.',
+ success:'Опишите проверяемые критерии, по которым вы примете результат.',
+ contact:'Укажите рабочий канал связи с ответственным человеком.',
+ interaction:'Уточните формат консультаций и частоту обратной связи.',
+};
 export function localAssessment(fields:TaskFields,description='',industry=''):QualityAssessment {
- const values=keys.map(k=>normalized(fields[k]??'').toLowerCase()).filter(Boolean);
- return {mode:'fallback',notice:'Консервативная проверка по правилам, не AI-оценка. Максимум 50/100; для содержательной оценки нужен доступ к OpenAI.',inputKey:assessmentKey(fields,description,industry),assessedAt:new Date().toISOString(),fields:keys.map(field=>{
- const value=fields[field]??'';const meaningless=isMeaningless(value,field)||values.filter(v=>v===normalized(value).toLowerCase()).length>2;
- const points=meaningless?0:Math.floor(FIELD_MAX[field]*fallbackFraction(value,field));
- return {field,max:FIELD_MAX[field],points,reason:meaningless?'Нет конкретного ответа или текст не похож на содержательное заполнение.':'Есть предварительный ответ; смысл и соответствие задаче не проверены AI.',improvement:field==='title'?'Название помогает найти задачу, но баллов не добавляет.':`Уточните поле «${FIELD_LABELS[field]}»: добавьте проверяемые факты, относящиеся к задаче.`};
- })};
+ return {mode:'fallback',notice:'AI-оценка пока недоступна. Сведения сохранены; баллы не начислены до содержательного анализа.',inputKey:assessmentKey(fields,description,industry),assessedAt:new Date().toISOString(),fields:keys.map(field=>({
+ field,max:FIELD_MAX[field],points:0,
+ reason:normalized(fields[field]??'')?`«${FIELD_LABELS[field]}»: ответ сохранён, качество ещё не оценено.`:`«${FIELD_LABELS[field]}»: сведения пока не указаны.`,
+ improvement:FIELD_HINTS[field],
+ }))};
 }
 export function calculateScore(fields:TaskFields,confirmed:boolean,assessment?:QualityAssessment):Score {
  let evaluated=assessment;
- if(!evaluated||evaluated.inputKey!==assessmentKey(fields)||!Array.isArray(evaluated.fields)||evaluated.fields.length!==keys.length||new Set(evaluated.fields.map(f=>f.field)).size!==keys.length||evaluated.fields.some(f=>!Object.hasOwn(FIELD_MAX,f.field)||!Number.isFinite(f.points)||f.points<0||f.points>FIELD_MAX[f.field]||f.max!==FIELD_MAX[f.field]))evaluated=localAssessment(fields);
- const items=RUBRIC.map(({key,label,max,fields:group})=>{const rows=group.map(f=>evaluated!.fields.find(row=>row.field===f)!);const missing=group.filter(f=>!rows.find(row=>row.field===f)?.points);return {key,label,max,missing,points:confirmed?rows.reduce((sum,row)=>sum+Math.floor(row.points),0):0,reason:rows.map(row=>row.reason).join(' ')};});
+ if(!evaluated||evaluated.mode!=='openai'||evaluated.inputKey!==assessmentKey(fields)||!Array.isArray(evaluated.fields)||evaluated.fields.length!==keys.length||new Set(evaluated.fields.map(f=>f.field)).size!==keys.length||evaluated.fields.some(f=>!Object.hasOwn(FIELD_MAX,f.field)||!Number.isFinite(f.points)||f.points<0||f.points>FIELD_MAX[f.field]||f.max!==FIELD_MAX[f.field]))evaluated=localAssessment(fields);
+ const items=RUBRIC.map(({key,label,max,fields:group})=>{const rows=group.map(f=>evaluated!.fields.find(row=>row.field===f)!);const missing=group.filter(f=>!rows.find(row=>row.field===f)?.points);return {key,label,max,missing,points:confirmed?rows.reduce((sum,row)=>sum+Math.floor(row.points),0):0,reason:[...new Set(rows.map(row=>row.reason.trim()).filter(Boolean))].join(' ')};});
  const total=items.reduce((sum,item)=>sum+item.points,0);
  return {total,level:total<40?'Черновик':total<70?'Рабочая':total<90?'Готовая':'Приоритетная',items,missing:items.flatMap(i=>i.missing)};
 }

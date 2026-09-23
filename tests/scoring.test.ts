@@ -8,7 +8,7 @@ test('garbage, empty fields, copied questions and unconfirmed inputs do not earn
  const garbage=Object.fromEntries(Object.keys(emptyFields()).map(k=>[k,'аю'])) as typeof meaningful;
  assert.equal(calculateScore(emptyFields(),true).total,0);assert.ok(calculateScore(garbage,true).total<10);
  const copied={...garbage,data:'Какие данные и материалы вы можете предоставить?'};assert.equal(calculateScore(copied,true).total,0);
- assert.equal(calculateScore(meaningful,false).total,0);assert.ok(calculateScore(meaningful,true).total>calculateScore(garbage,true).total);assert.ok(calculateScore(meaningful,true).total<=50);
+ assert.equal(calculateScore(meaningful,false).total,0);assert.equal(calculateScore(meaningful,true).total,0, 'Without semantic evaluation no points are invented');
 });
 test('AI assessments are invalidated when fields change and malformed assessments fall back',()=>{
  const assessment:QualityAssessment={...localAssessment(meaningful),mode:'openai',fields:(Object.keys(FIELD_MAX) as Field[]).map(field=>({field,max:FIELD_MAX[field],points:FIELD_MAX[field],reason:'Конкретный ответ',improvement:''}))};
@@ -16,4 +16,10 @@ test('AI assessments are invalidated when fields change and malformed assessment
  assert.ok(calculateScore({...meaningful,data:'аю'},true,assessment).total<100);
  assert.equal(assessmentKey(meaningful,'one','retail'),assessmentKey(meaningful,'two','food'));
  assert.ok(calculateScore(meaningful,true,{...assessment,fields:assessment.fields.map(row=>({...row,points:1000}))}).total<=50);
+});
+
+test('legacy fallback points never masquerade as a semantic score',()=>{
+ const fallback=localAssessment(meaningful);
+ fallback.fields=fallback.fields.map(row=>({...row,points:row.max}));
+ assert.equal(calculateScore(meaningful,true,fallback).total,0);
 });

@@ -19,7 +19,7 @@ test('duplicate, missing, invented or invalid model fields fall back without exp
 });
 test('timeout and absent key return labeled conservative fallback',async()=>{
  const timeout=await evaluateTask(emptyFields(),'Описание','Сфера',{apiKey:'test-secret',timeoutMs:5,fetchImpl:(()=>new Promise(()=>{})) as typeof fetch});assert.equal(timeout.mode,'fallback');assert.match(timeout.notice,/вовремя/);
- const offline=await evaluateTask(emptyFields(),'Описание','Сфера',{apiKey:''});assert.equal(offline.mode,'fallback');assert.match(offline.notice,/не AI/);
+ const offline=await evaluateTask(emptyFields(),'Описание','Сфера',{apiKey:''});assert.equal(offline.mode,'fallback');assert.match(offline.notice,/недоступна/);
 });
 
 test('short meaningful phrases survive AI validation including Telegram contacts',async()=>{
