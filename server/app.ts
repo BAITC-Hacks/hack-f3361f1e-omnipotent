@@ -3,10 +3,10 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { emptyFields, type AppState, type Field, type TaskFields, type Proposal } from '../shared/types.js';
-import { safeClarify } from './ai.js';
+import { generateClarification, aiStatus, type AIOptions } from './openai.js';
 import { seedState } from './seed.js';
 
-export function createApp({dataFile=resolve('data/store.json')}:{dataFile?:string}={}) {
+export function createApp({dataFile=resolve('data/store.json'),aiOptions={}}:{dataFile?:string;aiOptions?:AIOptions}={}) {
  const app=express();
  app.disable('x-powered-by');
  app.use(express.json({limit:'128kb'}));
@@ -25,10 +25,11 @@ export function createApp({dataFile=resolve('data/store.json')}:{dataFile?:strin
  function boolean(value:unknown,label:string):boolean {if(typeof value!=='boolean')fail(`${label}: ожидается логическое значение.`);return value as boolean;}
  function fields(value:unknown):TaskFields {const input=object(value);const result=emptyFields();for(const key of Object.keys(result) as Field[])result[key]=text(input[key],key,key==='title'?3:0,key==='title'?160:5000);return result;}
  app.get('/api/state',(_req,res)=>res.json(state));
- app.post('/api/clarify',(req,res)=>{
+ app.get('/api/ai/status',(_req,res)=>res.json(aiStatus(aiOptions)));
+ app.post('/api/clarify',async(req,res)=>{
   const input=object(req.body);const description=text(input.description,'Описание',10,5000);const industry=text(input.industry,'Сфера',2,120);
   const supplied:Partial<TaskFields>={};if(input.fields!==undefined){const source=object(input.fields);for(const key of Object.keys(emptyFields()) as Field[])if(source[key]!==undefined)supplied[key]=text(source[key],key,0,5000);}
-  res.json(safeClarify(description,industry,supplied));
+  res.json(await generateClarification(description,industry,supplied,aiOptions));
  });
  const saveTask:express.RequestHandler=(req,res)=>{
   const input=object(req.body);const existing=req.params.id?state.tasks.find(task=>task.id===req.params.id):undefined;

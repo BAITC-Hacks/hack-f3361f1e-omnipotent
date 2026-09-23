@@ -19,5 +19,5 @@ export interface Proposal {
 export interface Draft { description: string; industry: string }
 export interface AppState { tasks: Task[]; teams: Team[]; proposals: Proposal[]; drafts: Draft[] }
 export interface Question { field: Field; question: string }
-export interface Clarification { mode: 'demo'; notice: string; questions: Question[]; fields: TaskFields }
+export interface Clarification { mode: 'demo' | 'openai'; notice: string; questions: Question[]; fields: TaskFields }
 export const emptyFields = (): TaskFields => ({ title: '', context: '', need: '', users: '', data: '', constraints: '', outcome: '', success: '', contact: '', interaction: '' });

@@ -10,7 +10,7 @@ import { emptyFields } from '../shared/types.js';
 test('publication, unlimited low-score proposals, manual selection, idempotent points and persistence',async()=>{
  const dir=mkdtempSync(join(tmpdir(),'omnipotent-'));const dataFile=join(dir,'store.json');
  try {
-  const app=createApp({dataFile});const api=request(app);
+  const app=createApp({aiOptions:{apiKey:''},dataFile});const api=request(app);
   const body={fields:{...emptyFields(),title:'Новая задача'},description:'Нужен простой прототип для магазина.',industry:'Торговля',confirmed:false,published:true};
   await api.post('/api/tasks').send(body).expect(400);
   const task=(await api.post('/api/tasks').send({...body,confirmed:true}).expect(201)).body;
@@ -22,7 +22,7 @@ test('publication, unlimited low-score proposals, manual selection, idempotent p
   await api.patch(`/api/proposals/${second.id}`).send({status:'selected'}).expect(200);
   await api.patch(`/api/proposals/${first.id}/milestone`).send({}).expect(200);
   await api.patch(`/api/proposals/${first.id}/milestone`).send({}).expect(200);
-  const persisted=(await request(createApp({dataFile})).get('/api/state').expect(200)).body;
+  const persisted=(await request(createApp({aiOptions:{apiKey:''},dataFile})).get('/api/state').expect(200)).body;
   assert.equal(persisted.teams.find((t:{id:string})=>t.id==='team-1').points,10);
   assert.equal(persisted.proposals.filter((p:{status:string})=>p.status==='selected').length,2);
   await api.post('/api/proposals').send({...input,prototypeUrl:'javascript:alert(1)'}).expect(400);
@@ -32,7 +32,7 @@ test('publication, unlimited low-score proposals, manual selection, idempotent p
 });
 test('demo clarification preserves facts and returns at least three questions',async()=>{
  const dir=mkdtempSync(join(tmpdir(),'omnipotent-'));
- try{const api=request(createApp({dataFile:join(dir,'store.json')}));const description='В магазине постоянно заканчивается молоко.';
+ try{const api=request(createApp({aiOptions:{apiKey:''},dataFile:join(dir,'store.json')}));const description='В магазине постоянно заканчивается молоко.';
  const result=(await api.post('/api/clarify').send({description,industry:'Торговля'}).expect(200)).body;
  assert.equal(result.mode,'demo');assert.equal(result.fields.context,description);assert.equal(result.fields.contact,'');assert.ok(result.questions.length>=3);
  await api.post('/api/clarify').send({description,industry:'Торговля',fields:{data:42}}).expect(400);

@@ -15,7 +15,7 @@ test('UI journey: clarify, confirm, publish, apply, select, confirm milestone', 
  const {render, fireEvent, screen, within, waitFor, cleanup} = await import('@testing-library/react');
  const {default:App} = await import('../src/App');
  const dir=mkdtempSync(join(tmpdir(),'sana-ui-'));
- const server=createApp({dataFile:join(dir,'store.json')}).listen(0,'127.0.0.1');
+ const server=createApp({aiOptions:{apiKey:''},dataFile:join(dir,'store.json')}).listen(0,'127.0.0.1');
  await new Promise<void>(resolve=>server.once('listening',resolve));
  const address=server.address(); assert.ok(address&&typeof address==='object');
  const originalFetch=globalThis.fetch;
