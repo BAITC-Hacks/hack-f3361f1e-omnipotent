@@ -1,23 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { calculateScore, RUBRIC } from '../shared/scoring';
-import { emptyFields } from '../shared/types';
-test('unconfirmed information never earns points', () => {
-  const fields = Object.fromEntries(Object.keys(emptyFields()).map(key => [key, 'Подтверждаемые сведения']));
-  assert.equal(calculateScore(fields as ReturnType<typeof emptyFields>, false).total, 0);
-  assert.equal(calculateScore(fields as ReturnType<typeof emptyFields>, true).total, 100);
+import { FIELD_MAX, assessmentKey, calculateScore, localAssessment, potentialForField } from '../shared/scoring.js';
+import { emptyFields, type Field, type QualityAssessment } from '../shared/types.js';
+const meaningful={...emptyFields(),title:'Учёт остатков',context:'В магазине остатки учитывают вручную каждый вечер.',need:'Снизить число случаев отсутствия популярных товаров.',users:'Два продавца и управляющий магазина.',data:'CSV с продажами за 3 месяца предоставим команде.',constraints:'Срок 2 недели, бюджет 0 тенге.',outcome:'Рабочая веб-форма учёта с выгрузкой CSV.',success:'Все 5 контрольных продаж уменьшают остаток правильно.',contact:'owner@example.com',interaction:'Созвон каждую пятницу и ежедневный чат.'};
+test('field maxima sum 100 and represent individual contributions',()=>{assert.equal(Object.values(FIELD_MAX).reduce((a,b)=>a+b,0),100);assert.equal(potentialForField('context'),10);assert.equal(potentialForField('contact'),5);assert.equal(potentialForField('title'),0);});
+test('garbage, empty fields, copied questions and unconfirmed inputs do not earn points',()=>{
+ const garbage=Object.fromEntries(Object.keys(emptyFields()).map(k=>[k,'аю'])) as typeof meaningful;
+ assert.equal(calculateScore(emptyFields(),true).total,0);assert.ok(calculateScore(garbage,true).total<10);
+ const copied={...garbage,data:'Какие данные и материалы вы можете предоставить?'};assert.equal(calculateScore(copied,true).total,0);
+ assert.equal(calculateScore(meaningful,false).total,0);assert.ok(calculateScore(meaningful,true).total>calculateScore(garbage,true).total);assert.ok(calculateScore(meaningful,true).total<=50);
 });
-test('rubric is exactly 100 and multi-field categories require every field', () => {
-  assert.equal(RUBRIC.reduce((s,r) => s+r.max, 0), 100);
-  const fields = {...emptyFields(), context: 'Текущая ситуация', contact: 'demo@example.org'};
-  assert.equal(calculateScore(fields,true).total, 0);
-  assert.equal(calculateScore({...fields, need: 'Изменить процесс', interaction:'Еженедельная консультация'},true).total,30);
-});
-test('scores and readiness change when confirmed information is added or removed', () => {
-  const fields = {...emptyFields(), data:'CSV', outcome:'Прототип', success:'Точность 90%', constraints:'2 недели', users:'Менеджеры'};
-  assert.equal(calculateScore(fields,true).total,70);
-  assert.equal(calculateScore(fields,true).level,'Готовая');
-  assert.equal(calculateScore({...fields,data:'   '},true).level,'Рабочая');
-  assert.equal(calculateScore(emptyFields(),true).level,'Черновик');
-  assert.equal(calculateScore({...fields,context:'Сейчас',need:'Требуется'},true).level,'Приоритетная');
+test('AI assessments are invalidated when fields change and malformed assessments fall back',()=>{
+ const assessment:QualityAssessment={...localAssessment(meaningful),mode:'openai',fields:(Object.keys(FIELD_MAX) as Field[]).map(field=>({field,max:FIELD_MAX[field],points:FIELD_MAX[field],reason:'Конкретный ответ',improvement:''}))};
+ assert.equal(calculateScore(meaningful,true,assessment).total,100);
+ assert.ok(calculateScore({...meaningful,data:'аю'},true,assessment).total<100);
+ assert.equal(assessmentKey(meaningful,'one','retail'),assessmentKey(meaningful,'two','food'));
+ assert.ok(calculateScore(meaningful,true,{...assessment,fields:assessment.fields.map(row=>({...row,points:1000}))}).total<=50);
 });

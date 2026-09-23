@@ -9,7 +9,7 @@ export function clarify(description:string, industry:string, provided:Partial<Ta
  const fields=emptyFields();
  for(const key of Object.keys(fields) as Field[]) if(typeof provided[key]==='string') fields[key]=provided[key]!.trim();
  if(!fields.context) fields.context=description;
- const priority: Field[] = ['need','users','data','outcome','success','constraints','contact','interaction','title','context'];
+ const priority: Field[] = ['need','data','outcome','success','constraints','users','contact','interaction','title','context'];
  const missing=priority.filter(key=>!fields[key]);
  const selected=[...missing,...(Object.keys(fields) as Field[]).filter(key=>!missing.includes(key))].slice(0,Math.max(3,Math.min(missing.length,6)));
  return {mode:'demo', notice:'Демонстрационный режим: вопросы формируются по правилам, внешний AI не подключён. Ответы заполняет человек.', fields, questions:selected.map(field=>({field,question:missing.includes(field)?`Для сферы «${industry}»: ${questions[field]}`:`Проверьте поле «${FIELD_LABELS[field]}»: нужны ли уточнения?`}))};

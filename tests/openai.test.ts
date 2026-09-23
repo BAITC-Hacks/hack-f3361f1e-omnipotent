@@ -65,7 +65,9 @@ test('API awaits OpenAI and status endpoint never exposes a key',async()=>{
   const app=createApp({dataFile:join(dir,'store.json'),aiOptions:{apiKey:'test-server-key',model:'gpt-4.1-mini',fetchImpl:(async()=>response(completed(JSON.stringify({questions})))) as typeof fetch}});
   const status=(await request(app).get('/api/ai/status').expect(200)).body;
   assert.deepEqual(status,{configured:true,model:'gpt-4.1-mini'});
-  const result=(await request(app).post('/api/clarify').send({description,industry:'Торговля'}).expect(200)).body;
+  const api=request.agent(app);
+  await api.post('/api/session').send({role:'business',name:'AI test'}).expect(200);
+  const result=(await api.post('/api/clarify').send({description,industry:'Торговля'}).expect(200)).body;
   assert.equal(result.mode,'openai');assert.equal(JSON.stringify(result).includes('test-server-key'),false);
  }finally{rmSync(dir,{recursive:true,force:true});}
 });

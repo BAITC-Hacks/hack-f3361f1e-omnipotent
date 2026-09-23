@@ -1,65 +1,123 @@
 import express from 'express';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { emptyFields, type AppState, type Field, type TaskFields, type Proposal } from '../shared/types.js';
+import { emptyFields, FIELD_LABELS, type AppState, type Field, type Identity, type TaskFields, type Proposal, type Task, type QualityAssessment } from '../shared/types.js';
 import { generateClarification, aiStatus, type AIOptions } from './openai.js';
+import { evaluateTask } from './evaluation.js';
+import { localAssessment, assessmentKey } from '../shared/scoring.js';
 import { seedState } from './seed.js';
+
+type Store = AppState & { schemaVersion: number; sessions: Record<string, Identity> };
+const COOKIE = 'sana_session';
 
 export function createApp({dataFile=resolve('data/store.json'),aiOptions={}}:{dataFile?:string;aiOptions?:AIOptions}={}) {
  const app=express();
  app.disable('x-powered-by');
  app.use(express.json({limit:'128kb'}));
- let state:AppState=existsSync(dataFile)?JSON.parse(readFileSync(dataFile,'utf8')):seedState();
- function persist(next:AppState) {
+ const original=existsSync(dataFile)?JSON.parse(readFileSync(dataFile,'utf8')):seedState();
+ if(existsSync(dataFile)&&original.schemaVersion!==2) copyFileSync(dataFile,`${dataFile}.before-accounts-${Date.now()}.bak`);
+ const businesses=original.businesses?.length?original.businesses:seedState().businesses;
+ if(original.tasks.some((task:Task)=>!task.businessId&&!/^task-[1-5]$/.test(task.id))) businesses.push({id:'business-legacy',name:'Мой бизнес'});
+ let state:Store={...original,businesses,schemaVersion:2,sessions:original.sessions??{},tasks:original.tasks.map((task:Task)=>({...task,businessId:task.businessId??(/^task-[1-5]$/.test(task.id)?`business-${task.id.split('-')[1]}`:'business-legacy')}))};
+ function persist(next:Store) {
   mkdirSync(dirname(dataFile),{recursive:true});
   const temporary=`${dataFile}.${process.pid}.tmp`;
   writeFileSync(temporary,JSON.stringify(next,null,2),'utf8');
   renameSync(temporary,dataFile);
   state=next;
  }
- if(!existsSync(dataFile)) persist(state);
- function fail(message:string):never {const error=new Error(message);Object.assign(error,{status:400});throw error;}
+ persist(state);
+ function fail(message:string,status=400):never {throw Object.assign(new Error(message),{status});}
  function object(value:unknown):Record<string,unknown> {if(!value||typeof value!=='object'||Array.isArray(value))fail('Ожидается JSON-объект.');return value as Record<string,unknown>;}
  function text(value:unknown,label:string,min=0,max=5000):string {if(typeof value!=='string')fail(`${label}: ожидается текст.`);const clean=(value as string).trim();if(clean.length<min||clean.length>max)fail(`${label}: допустимая длина ${min}–${max} символов.`);return clean;}
  function boolean(value:unknown,label:string):boolean {if(typeof value!=='boolean')fail(`${label}: ожидается логическое значение.`);return value as boolean;}
- function fields(value:unknown):TaskFields {const input=object(value);const result=emptyFields();for(const key of Object.keys(result) as Field[])result[key]=text(input[key],key,key==='title'?3:0,key==='title'?160:5000);return result;}
- app.get('/api/state',(_req,res)=>res.json(state));
+ function fields(value:unknown):TaskFields {const input=object(value);const result=emptyFields();for(const key of Object.keys(result) as Field[])result[key]=text(input[key]??'',FIELD_LABELS[key],0,key==='title'?160:5000);return result;}
+ function token(req:express.Request) {return (req.headers.cookie??'').split(';').map(s=>s.trim()).find(s=>s.startsWith(`${COOKIE}=`))?.slice(COOKIE.length+1)??'';}
+ function identity(req:express.Request) {return state.sessions[token(req)]??null;}
+ function requireRole(req:express.Request,role:Identity['role']) {const who=identity(req);if(!who)fail('Войдите в кабинет по имени.',401);if(who.role!==role)fail(role==='business'?'Это действие доступно бизнесу.':'Это действие доступно команде.',403);return who;}
+ function ownedProposal(req:express.Request) {
+  const who=requireRole(req,'business');const proposal=state.proposals.find(p=>p.id===req.params.id);
+  if(!proposal)fail('Отклик не найден.',404);
+  if(!state.tasks.some(t=>t.id===proposal.taskId&&t.businessId===who.profileId))fail('Решение может принять только бизнес, опубликовавший задачу.',403);
+  return proposal;
+ }
+ const evaluations=new Map<string,QualityAssessment>();
+ const cacheKey=(owner:string,f:TaskFields,description:string,industry:string)=>JSON.stringify([owner,assessmentKey(f,description,industry),description,industry]);
+ async function assess(owner:string,f:TaskFields,description:string,industry:string) {
+  const key=cacheKey(owner,f,description,industry);
+  const cached=evaluations.get(key);if(cached)return cached;
+  const result=await evaluateTask(f,description,industry,aiOptions);
+  // A transient provider outage must not permanently prevent retrying the same text.
+  if(result.mode==='openai') {if(evaluations.size>=200)evaluations.delete(evaluations.keys().next().value!);evaluations.set(key,result);}
+  return result;
+ }
+
+ app.get('/api/session',(req,res)=>res.json(identity(req)));
+ app.post('/api/session',(req,res)=>{
+  const input=object(req.body);if(input.role!=='business'&&input.role!=='team')fail('Выберите бизнес или команду.');
+  const role=input.role as Identity['role'];const name=text(input.name,'Название',1,100).replace(/\s+/g,' ');
+  const collection=role==='business'?state.businesses:state.teams;
+  let profile=collection.find(p=>p.name.toLocaleLowerCase('ru')===name.toLocaleLowerCase('ru'));
+  let next={...state};
+  if(!profile){
+   const id=randomUUID();profile={id,name};
+   if(role==='business')next={...next,businesses:[...state.businesses,{id,name}]};
+   else next={...next,teams:[...state.teams,{id,name,interests:[],skills:[],technologies:[],points:0}]};
+  }
+  const who:Identity={role,profileId:profile.id,name:profile.name};const sessionToken=randomUUID();
+  const sessions={...state.sessions};delete sessions[token(req)];sessions[sessionToken]=who;
+  persist({...next,sessions});res.cookie(COOKIE,sessionToken,{httpOnly:true,sameSite:'lax',maxAge:7*24*60*60*1000,path:'/'});res.json(who);
+ });
+ app.delete('/api/session',(req,res)=>{const sessions={...state.sessions};delete sessions[token(req)];persist({...state,sessions});res.clearCookie(COOKIE,{path:'/'});res.json({success:true});});
+ app.get('/api/state',(req,res)=>{
+  const who=identity(req);
+  const ownTasks=state.tasks.filter(t=>who?.role==='business'&&t.businessId===who.profileId);
+  res.json({businesses:state.businesses,tasks:state.tasks.filter(t=>t.published||ownTasks.includes(t)),teams:state.teams,drafts:state.drafts,
+   proposals:state.proposals.filter(p=>who?.role==='team'?p.teamId===who.profileId:who?.role==='business'?ownTasks.some(t=>t.id===p.taskId):false)} satisfies AppState);
+ });
  app.get('/api/ai/status',(_req,res)=>res.json(aiStatus(aiOptions)));
  app.post('/api/clarify',async(req,res)=>{
-  const input=object(req.body);const description=text(input.description,'Описание',10,5000);const industry=text(input.industry,'Сфера',2,120);
-  const supplied:Partial<TaskFields>={};if(input.fields!==undefined){const source=object(input.fields);for(const key of Object.keys(emptyFields()) as Field[])if(source[key]!==undefined)supplied[key]=text(source[key],key,0,5000);}
+  requireRole(req,'business');const input=object(req.body);const description=text(input.description,'Описание',1,5000);const industry=text(input.industry??'Другое','Сфера',0,120)||'Другое';
+  const supplied:Partial<TaskFields>={};if(input.fields!==undefined){const source=object(input.fields);for(const key of Object.keys(emptyFields()) as Field[])if(source[key]!==undefined)supplied[key]=text(source[key],FIELD_LABELS[key],0,key==='title'?160:5000);}
   res.json(await generateClarification(description,industry,supplied,aiOptions));
  });
- const saveTask:express.RequestHandler=(req,res)=>{
-  const input=object(req.body);const existing=req.params.id?state.tasks.find(task=>task.id===req.params.id):undefined;
-  if(req.params.id&&!existing){res.status(404).json({error:'Задача не найдена.'});return;}
-  const confirmed=boolean(input.confirmed,'Подтверждение');const published=boolean(input.published,'Публикация');
-  if(published&&!confirmed)fail('Перед публикацией подтвердите карточку задачи.');
-  const now=new Date().toISOString();
-  const task={...fields(input.fields),id:existing?.id??randomUUID(),description:text(input.description,'Описание',10,5000),industry:text(input.industry,'Сфера',2,120),confirmed,published,createdAt:existing?.createdAt??now,updatedAt:now};
+ app.post('/api/assess',async(req,res)=>{
+  const who=requireRole(req,'business');const input=object(req.body);const f=fields(input.fields);
+  res.json(await assess(who.profileId,f,text(input.description??'','Описание'),text(input.industry??'Другое','Сфера',0,120)));
+ });
+ const saveTask:express.RequestHandler=async(req,res)=>{
+  const who=requireRole(req,'business');const input=object(req.body);const existing=req.params.id?state.tasks.find(task=>task.id===req.params.id):undefined;
+  if(req.params.id&&!existing)fail('Задача не найдена.',404);
+  if(existing&&existing.businessId!==who.profileId)fail('Можно редактировать только задачи своего бизнеса.',403);
+  const confirmed=boolean(input.confirmed,'Подтверждение');const published=boolean(input.published,'Публикация');const f=fields(input.fields);
+  if(published&&!f.title)fail('Добавьте название задачи перед публикацией.');
+  if(published&&!confirmed)fail('Перед публикацией отметьте, что проверили сведения. Низкая оценка не мешает публикации.');
+  if(!f.title)f.title='Без названия';
+  const description=text(input.description??'','Описание');const industry=text(input.industry??'Другое','Сфера',0,120)||'Другое';
+  const assessment=confirmed?await assess(who.profileId,f,description,industry):localAssessment(f,description,industry);
+  if(existing&&state.tasks.find(t=>t.id===existing.id)?.updatedAt!==existing.updatedAt)fail('Задача уже изменена. Откройте последнюю версию и повторите сохранение.',409);
+  const now=new Date().toISOString();const task:Task={...f,id:existing?.id??randomUUID(),businessId:who.profileId,description,industry,confirmed,published,assessment,createdAt:existing?.createdAt??now,updatedAt:now};
   persist({...state,tasks:existing?state.tasks.map(t=>t.id===task.id?task:t):[task,...state.tasks]});
   res.status(existing?200:201).json(task);
  };
  app.post('/api/tasks',saveTask);app.put('/api/tasks/:id',saveTask);
  app.post('/api/proposals',(req,res)=>{
-  const input=object(req.body);const taskId=text(input.taskId,'Задача',1,100);const teamId=text(input.teamId,'Команда',1,100);
+  const who=requireRole(req,'team');const input=object(req.body);const taskId=text(input.taskId,'Задача',1,100);
+  if(input.teamId!==undefined&&input.teamId!==who.profileId)fail('Нельзя отправлять решение от имени другой команды.',403);
   if(!state.tasks.some(task=>task.id===taskId&&task.published))fail('Отклик доступен только на опубликованную задачу.');
-  if(!state.teams.some(team=>team.id===teamId))fail('Команда не найдена.');
-  const prototypeUrl=text(input.prototypeUrl,'Ссылка на прототип',8,2048);
+  const prototypeUrl=text(input.prototypeUrl??'','Ссылка на прототип',0,2048);
   if(prototypeUrl){let valid=false;try{valid=['http:','https:'].includes(new URL(prototypeUrl).protocol);}catch{}if(!valid)fail('Ссылка на прототип должна начинаться с http:// или https://.');}
-  const proposal:Proposal={id:randomUUID(),taskId,teamId,idea:text(input.idea,'Идея',10),plan:text(input.plan,'План',10),timeline:text(input.timeline,'Сроки',2,500),prototypeUrl,status:'pending',milestoneConfirmed:false,createdAt:new Date().toISOString()};
+  const proposal:Proposal={id:randomUUID(),taskId,teamId:who.profileId,idea:text(input.idea,'Идея',1),plan:text(input.plan,'План',1),timeline:text(input.timeline,'Сроки',1,500),prototypeUrl,status:'pending',feedback:'',milestoneConfirmed:false,createdAt:new Date().toISOString()};
   persist({...state,proposals:[proposal,...state.proposals]});res.status(201).json(proposal);
  });
  app.patch('/api/proposals/:id',(req,res)=>{
-  const input=object(req.body);if(!['selected','rejected'].includes(input.status as string))fail('Выберите решение: selected или rejected.');
-  const old=state.proposals.find(p=>p.id===req.params.id);if(!old){res.status(404).json({error:'Отклик не найден.'});return;}
-  const proposal={...old,status:input.status as 'selected'|'rejected'};
+  const old=ownedProposal(req);const input=object(req.body);if(!['selected','rejected'].includes(input.status as string))fail('Выберите решение: selected или rejected.');
+  const proposal={...old,status:input.status as 'selected'|'rejected',feedback:input.feedback===undefined?old.feedback??'':text(input.feedback,'Ответ бизнесa')};
   persist({...state,proposals:state.proposals.map(p=>p.id===old.id?proposal:p)});res.json(proposal);
  });
  app.patch('/api/proposals/:id/milestone',(req,res)=>{
-  object(req.body);const old=state.proposals.find(p=>p.id===req.params.id);if(!old){res.status(404).json({error:'Отклик не найден.'});return;}
-  if(old.status!=='selected')fail('Сначала выберите команду для задачи.');
+  object(req.body);const old=ownedProposal(req);if(old.status!=='selected')fail('Сначала выберите команду для задачи.');
   const proposal={...old,milestoneConfirmed:true};
   if(!old.milestoneConfirmed)persist({...state,proposals:state.proposals.map(p=>p.id===old.id?proposal:p),teams:state.teams.map(t=>t.id===old.teamId?{...t,points:t.points+10}:t)});
   res.json(proposal);
